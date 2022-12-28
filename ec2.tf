@@ -4,16 +4,6 @@ provider "aws" {
   profile = "terraform-user"
 }
 
-# store the terraform state file in s3
-terraform {
-  backend "s3" {
-    bucket  = "bucket-xander-881106"
-    key     = "build/terraform.tfstate"
-    region  = "us-east-1"
-    profile = "terraform-user"
-  }
-}
-
 # create default vpc if one does not exit
 resource "aws_default_vpc" "default_vpc" {
   tags = {
@@ -34,7 +24,7 @@ resource "aws_default_subnet" "default_az1" {
 }
 
 resource "aws_security_group" "ec2_security_group" {
-  name        = "ec2 security group"
+  name        = "docker-server security group"
   description = "allow access on ports 80 and 22"
   vpc_id      = aws_default_vpc.default_vpc.id
 
@@ -62,7 +52,7 @@ resource "aws_security_group" "ec2_security_group" {
   }
 
   tags = {
-    Name = "ec2 security group"
+    Name = "docker-server security group"
   }
 }
 
@@ -82,20 +72,62 @@ data "aws_ami" "amazon_linux_2" {
 }
 
 # launch the ec2 instance and install website
-resource "aws_instance" "mathy_atis" {
+resource "aws_instance" "docker_server_ec2" {
   ami                    = data.aws_ami.amazon_linux_2.id
   instance_type          = "t2.micro"
   subnet_id              = aws_default_subnet.default_az1.id
   vpc_security_group_ids = [aws_security_group.ec2_security_group.id]
   key_name               = "newKey"
-  user_data              = file("build_docker_images.sh")
 
   tags = {
-    Name = "terra server"
+    Name = "docker-server"
   }
 }
 
-# print the ec2's public ipv4 address
-output "public_ipv4_address" {
-  value = aws_instance.mathy_atis.public_ip
+# an empty resource block
+resource "null_resource" "name" {
+  # ssh into the ec2 instance
+  connection {
+    host = aws_instance.docker_server_ec2.public_ip
+    type = "ssh"
+    user = "ec2-user"
+    private_key = file("~/Téléchargemnts/newKey.pem")
+  }
+
+  # copy the password file for the docker hub account
+  # from your computer to the ec2 instance
+  provisioner "file" {
+    destination = "/home/ec2-user/my_password.txt"
+    source = "my_password.txt"
+  }
+
+  # copy the dockerfile from the computer to the ec2 instance
+  provisioner "file" {
+    destination = "/home/ec2-user/Dockerfile"
+    source = "Dockerfile"
+  }
+
+  # copy the build_docker_images.sh from the computer to the ec2 instance
+  provisioner "file" {
+    destination = "/home/ec2-user/build_docker_images.sh"
+    source = "build_docker_images.sh"
+  }
+
+  # set permissions and run the build_docker_images.sh file
+  provisioner "remote-exec" {
+    inline = [
+      "sudo chmod +x /home/ec2-user/build_docker_images.sh",
+      "sh /home/ec2-user/build_docker_images.sh",
+    ]
+  }
+
+  # wait for ec2 to be created
+  depends_on = [
+    aws_instance.docker_server_ec2
+  ]
+}
+
+# print the url of the container server
+output "container_url" {
+  value = join("", ["http://", aws_instance.docker_server_ec2.public_dns])
 }
